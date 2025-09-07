@@ -57,8 +57,8 @@ module.exports = async function handler(req, res) {
           quantity: 1
         }
       ],
-      success_url: "https://gabrioladir.carrd.co/thank-you",
-      cancel_url:  "https://gabrioladir.carrd.co/payment-cancelled",
+      success_url: "https://gabrioladir.carrd.co/?paid=1",
+		cancel_url:  "https://gabrioladir.carrd.co/?canceled=1",
       metadata: {
         businessName: businessName || "",
         contactName:  contactName  || "",
