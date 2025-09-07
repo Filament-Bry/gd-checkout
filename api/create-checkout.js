@@ -1,8 +1,8 @@
-import Stripe from "stripe";
-
+// api/create-checkout.js
+const Stripe = require("stripe");
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
@@ -36,8 +36,8 @@ export default async function handler(req, res) {
           quantity: 1
         }
       ],
-      success_url: "https://YOUR-SITE.com/thank-you",       // <-- replace
-      cancel_url: "https://YOUR-SITE.com/payment-cancelled",
+      success_url: "https://gabrioladir.carrd.co/thank-you",
+      cancel_url: "https://gabrioladir.carrd.co/payment-cancelled",
       metadata: {
         businessName: businessName || "",
         contactName: contactName || "",
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error(err);
+    console.error("Stripe error:", err);
     return res.status(500).json({ error: "Server error" });
   }
-}
+};
