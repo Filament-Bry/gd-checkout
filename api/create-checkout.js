@@ -2,7 +2,28 @@
 const Stripe = require("stripe");
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+// allow prod site; add a preview origin if you need it
+const ALLOWED_ORIGINS = new Set([
+  "https://gabrioladir.carrd.co"
+  // "http://localhost:3000" // add if testing locally
+]);
+
+function setCors(res, origin) {
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGINS.has(origin) ? origin : "https://gabrioladir.carrd.co");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
 module.exports = async function handler(req, res) {
+  const origin = req.headers.origin || "";
+  setCors(res, origin);
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end(); // preflight OK
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
@@ -37,11 +58,11 @@ module.exports = async function handler(req, res) {
         }
       ],
       success_url: "https://gabrioladir.carrd.co/thank-you",
-      cancel_url: "https://gabrioladir.carrd.co/payment-cancelled",
+      cancel_url:  "https://gabrioladir.carrd.co/payment-cancelled",
       metadata: {
         businessName: businessName || "",
-        contactName: contactName || "",
-        phone: phone || ""
+        contactName:  contactName  || "",
+        phone:        phone        || ""
       }
     });
 
