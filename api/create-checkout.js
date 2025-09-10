@@ -1,27 +1,30 @@
-// src/api/create-checkout.js
+// /api/create-checkout.js
 import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-// Allow these sites to call this endpoint from the browser
-const ALLOWED_ORIGINS = [
+// change this to your real origin(s)
+const ALLOW_ORIGINS = new Set([
   "https://gabrioladirectory.ca",
-  "https://www.gabrioladirectory.ca",
-  "https://gabedir.carrd.co",
-];
+  "https://www.gabrioladirectory.ca",     // if you use www
+  // "https://*.carrd.co",                 // Carrd preview; avoid wildcard if you can
+]);
 
-export default async function handler(req, res) {
-  // --- CORS headers ---
-  const origin = req.headers.origin;
-  if (ALLOWED_ORIGINS.includes(origin)) {
+function cors(res, origin) {
+  if (ALLOW_ORIGINS.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin"); // important for caching proxies
   }
-  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
-  // Preflight
+export default async function handler(req, res) {
+  const origin = req.headers.origin || "";
+  cors(res, origin);
+
   if (req.method === "OPTIONS") {
+    // Preflight: no body, just headers
     return res.status(204).end();
   }
 
@@ -30,60 +33,31 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Body comes in as JSON from your site
-    const {
-      amount_cents,
-      currency = "cad",
-      email = "",
-      description = "Gabriola Directory — Listings & Ads",
-      businessName = "",
-      contactName = "",
-      phone = "",
-    } = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-
-    // Minimal validation
-    const amt = Number(amount_cents);
-    if (!Number.isFinite(amt) || amt < 50) {
-      return res.status(400).json({ error: "Invalid amount_cents" });
+    const { amount_cents, currency = "cad", email, description,
+            businessName, contactName, phone } = req.body || {};
+    if (!amount_cents || amount_cents < 50) {
+      return res.status(400).json({ error: "Amount too small" });
     }
 
-    const returnBase =
-      origin && ALLOWED_ORIGINS.includes(origin)
-        ? origin
-        : "https://gabrioladirectory.ca";
-
-    const success_url = `${returnBase}/?paid=1`;
-    const cancel_url = `${returnBase}/?canceled=1`;
-
-    // Create a one-line item checkout for the exact total
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: email || undefined,
-      line_items: [
-        {
-          price_data: {
-            currency,
-            product_data: {
-              name: description,
-            },
-            unit_amount: amt, // already in cents
-          },
-          quantity: 1,
+      line_items: [{
+        price_data: {
+          currency,
+          unit_amount: amount_cents,
+          product_data: { name: description || "Gabriola Directory — Listings & Ads" }
         },
-      ],
-      success_url,
-      cancel_url,
-      metadata: {
-        businessName,
-        contactName,
-        phone,
-        source: "gabrioladirectory-web",
-      },
+        quantity: 1
+      }],
+      metadata: { businessName, contactName, phone },
+      success_url: "https://gabrioladirectory.ca/?paid=1",
+      cancel_url: "https://gabrioladirectory.ca/?paid=0"
     });
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error("Checkout error:", err);
-    return res.status(500).json({ error: "Failed to create checkout session" });
+    console.error(err);
+    return res.status(500).json({ error: err?.message || "Server error" });
   }
 }
