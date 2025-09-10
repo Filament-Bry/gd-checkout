@@ -1,69 +1,89 @@
-// /api/create-checkout.js  (Vercel serverless function)
-import Stripe from 'stripe';
+// src/api/create-checkout.js
+import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// allow these origins
-const ALLOWED = new Set([
-  'https://gabedir.carrd.co',
-  'https://www.gabrioladirectory.ca',
-  'https://gabrioladirectory.ca',
-	'http://www.gabrioladirectory.ca',
-  'http://gabrioladirectory.ca',
-]);
-
-function corsHeaders(origin) {
-  const allow = ALLOWED.has(origin) ? origin : 'null';
-  return {
-    'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '86400',
-  };
-}
+// Allow these sites to call this endpoint from the browser
+const ALLOWED_ORIGINS = [
+  "https://gabrioladirectory.ca",
+  "https://www.gabrioladirectory.ca",
+  "https://gabedir.carrd.co",
+];
 
 export default async function handler(req, res) {
-  const origin = req.headers.origin || '';
-  const headers = corsHeaders(origin);
+  // --- CORS headers ---
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   // Preflight
-  if (req.method === 'OPTIONS') {
-    res.status(200).set(headers).end();
-    return;
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
   }
 
-  if (req.method !== 'POST') {
-    res.status(405).set(headers).json({ error: 'Method not allowed' });
-    return;
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   try {
-    const { amount_cents, currency, email, description, businessName, contactName, phone } = req.body || {};
+    // Body comes in as JSON from your site
+    const {
+      amount_cents,
+      currency = "cad",
+      email = "",
+      description = "Gabriola Directory — Listings & Ads",
+      businessName = "",
+      contactName = "",
+      phone = "",
+    } = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
-    // TODO: validate inputs here
+    // Minimal validation
+    const amt = Number(amount_cents);
+    if (!Number.isFinite(amt) || amt < 50) {
+      return res.status(400).json({ error: "Invalid amount_cents" });
+    }
 
+    const returnBase =
+      origin && ALLOWED_ORIGINS.includes(origin)
+        ? origin
+        : "https://gabrioladirectory.ca";
+
+    const success_url = `${returnBase}/?paid=1`;
+    const cancel_url = `${returnBase}/?canceled=1`;
+
+    // Create a one-line item checkout for the exact total
     const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      payment_method_types: ['card'],
+      mode: "payment",
       customer_email: email || undefined,
-      line_items: [{
-        price_data: {
-          currency: currency || 'cad',
-          product_data: {
-            name: description || 'Gabriola Directory — Listings & Ads',
-            metadata: { businessName, contactName, phone },
+      line_items: [
+        {
+          price_data: {
+            currency,
+            product_data: {
+              name: description,
+            },
+            unit_amount: amt, // already in cents
           },
-          unit_amount: amount_cents,
+          quantity: 1,
         },
-        quantity: 1,
-      }],
-      success_url: 'https://gabedir.carrd.co/?paid=1',
-      cancel_url:  'https://gabedir.carrd.co/?canceled=1',
+      ],
+      success_url,
+      cancel_url,
+      metadata: {
+        businessName,
+        contactName,
+        phone,
+        source: "gabrioladirectory-web",
+      },
     });
 
-    res.status(200).set(headers).json({ url: session.url });
+    return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error(err);
-    res.status(500).set(headers).json({ error: String(err?.message || err) });
+    console.error("Checkout error:", err);
+    return res.status(500).json({ error: "Failed to create checkout session" });
   }
 }
