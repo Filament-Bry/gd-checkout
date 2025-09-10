@@ -1,74 +1,69 @@
-// api/create-checkout.js
-const Stripe = require("stripe");
+// /api/create-checkout.js  (Vercel serverless function)
+import Stripe from 'stripe';
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// allow prod site; add a preview origin if you need it
-const ALLOWED_ORIGINS = new Set([
-  "https://gabrioladir.carrd.co"
-  // "http://localhost:3000" // add if testing locally
+// allow these origins
+const ALLOWED = new Set([
+  'https://gabedir.carrd.co',
+  'https://www.gabrioladirectory.ca',
+  'https://gabrioladirectory.ca',
+	'http://www.gabrioladirectory.ca',
+  'http://gabrioladirectory.ca',
 ]);
 
-function setCors(res, origin) {
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGINS.has(origin) ? origin : "https://gabrioladir.carrd.co");
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Max-Age", "86400");
+function corsHeaders(origin) {
+  const allow = ALLOWED.has(origin) ? origin : 'null';
+  return {
+    'Access-Control-Allow-Origin': allow,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '86400',
+  };
 }
 
-module.exports = async function handler(req, res) {
-  const origin = req.headers.origin || "";
-  setCors(res, origin);
+export default async function handler(req, res) {
+  const origin = req.headers.origin || '';
+  const headers = corsHeaders(origin);
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end(); // preflight OK
+  // Preflight
+  if (req.method === 'OPTIONS') {
+    res.status(200).set(headers).end();
+    return;
   }
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
+  if (req.method !== 'POST') {
+    res.status(405).set(headers).json({ error: 'Method not allowed' });
+    return;
   }
 
   try {
-    const {
-      amount_cents,
-      currency = "cad",
-      description = "Gabriola Directory — Listings & Ads",
-      businessName,
-      contactName,
-      email,
-      phone
-    } = req.body || {};
+    const { amount_cents, currency, email, description, businessName, contactName, phone } = req.body || {};
 
-    if (!amount_cents || amount_cents < 50) {
-      return res.status(400).json({ error: "Invalid amount" });
-    }
+    // TODO: validate inputs here
 
     const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      payment_method_types: ["card"],
+      mode: 'payment',
+      payment_method_types: ['card'],
       customer_email: email || undefined,
-      line_items: [
-        {
-          price_data: {
-            currency,
-            product_data: { name: description },
-            unit_amount: amount_cents
+      line_items: [{
+        price_data: {
+          currency: currency || 'cad',
+          product_data: {
+            name: description || 'Gabriola Directory — Listings & Ads',
+            metadata: { businessName, contactName, phone },
           },
-          quantity: 1
-        }
-      ],
-      success_url: "https://gabrioladir.carrd.co/?paid=1",
-		cancel_url:  "https://gabrioladir.carrd.co/?canceled=1",
-      metadata: {
-        businessName: businessName || "",
-        contactName:  contactName  || "",
-        phone:        phone        || ""
-      }
+          unit_amount: amount_cents,
+        },
+        quantity: 1,
+      }],
+      success_url: 'https://gabedir.carrd.co/?paid=1',
+      cancel_url:  'https://gabedir.carrd.co/?canceled=1',
     });
 
-    return res.status(200).json({ url: session.url });
+    res.status(200).set(headers).json({ url: session.url });
   } catch (err) {
-    console.error("Stripe error:", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error(err);
+    res.status(500).set(headers).json({ error: String(err?.message || err) });
   }
-};
+}
