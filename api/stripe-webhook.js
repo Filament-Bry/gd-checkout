@@ -1,117 +1,124 @@
-// /api/stripe-webhook.js
-// Minimal, production-safe Stripe webhook for Vercel (Node runtime).
-// Verifies signature using the *raw* request body, then handles events.
-
-export const config = { runtime: "nodejs" }; // Vercel Node (not Edge)
+// === /api/stripe-webhook.js ===============================================
+// Vercel: keep the raw body for Stripe signature verification
+export const config = {
+  api: { bodyParser: false },
+  runtime: "nodejs",
+};
 
 import Stripe from "stripe";
-import getRawBody from "raw-body"; // add to package.json:  "raw-body": "^2.5.2"
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+// ---- Env (set these in Vercel → Project → Settings → Environment Variables)
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;         // sk_test_… or sk_live_…
+const WEBHOOK_SECRET     = process.env.STRIPE_WEBHOOK_SECRET;     // whsec_… (TEST or LIVE to match the endpoint)
+const GSHEETS_WEBHOOK_URL = process.env.GSHEETS_WEBHOOK_URL || ""; // optional
 
-/** Optional: forward successful payments to Google Sheets (Apps Script) */
-async function forwardToSheets(payload) {
-  const url = process.env.GSHEETS_WEBHOOK_URL;
-  if (!url) return;
+if (!STRIPE_SECRET_KEY) console.error("[webhook] Missing STRIPE_SECRET_KEY");
+if (!WEBHOOK_SECRET)     console.error("[webhook] Missing STRIPE_WEBHOOK_SECRET");
+
+const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
+// ---- small helper: read raw request body safely
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+// ---- optional: log to Google Sheets Apps Script (fire-and-forget)
+async function logToSheets(payload) {
+  if (!GSHEETS_WEBHOOK_URL) return;
   try {
-    await fetch(url, {
+    await fetch(GSHEETS_WEBHOOK_URL, {
       method: "POST",
+      mode: "no-cors",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    console.error("Apps Script forward failed:", e?.message || e);
-  }
-}
-
-/** Optional: email a short receipt via Resend (only if RESEND_API_KEY set) */
-async function emailReceipt({ subject, text }) {
-  const key = process.env.RESEND_API_KEY;
-  const to = process.env.NOTIFY_EMAIL || "info@gabrioladirectory.ca";
-  const from = process.env.FROM_EMAIL || "noreply@gabrioladirectory.ca";
-  if (!key) return;
-
-  try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to, subject, text }),
-    });
-  } catch (e) {
-    console.error("Resend email failed:", e?.message || e);
+    // never throw from here
+    console.warn("[webhook] Sheets logging failed (ignored):", e?.message || e);
   }
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end("Method Not Allowed");
+  // CORS (optional; Stripe doesn’t need it, but harmless)
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Stripe-Signature, Content-Type");
+  if (req.method === "OPTIONS") return res.status(204).end();
 
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  console.log("[webhook] hit", new Date().toISOString());
+
+  // 1) Read raw body for signature verification
+  let buf;
+  try {
+    buf = await readRawBody(req);
+  } catch (err) {
+    console.error("[webhook] raw-body-error:", err?.message || err);
+    return res.status(400).json({ error: "Cannot read body" });
+  }
+
+  // 2) Verify signature
   const sig = req.headers["stripe-signature"];
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) return res.status(500).end("Missing STRIPE_WEBHOOK_SECRET");
+  if (!sig) {
+    console.error("[webhook] Missing stripe-signature header");
+    return res.status(400).json({ error: "Missing signature" });
+  }
 
   let event;
   try {
-    // IMPORTANT: use raw body for signature verification
-    const raw = await getRawBody(req);
-    event = stripe.webhooks.constructEvent(raw, sig, secret);
+    event = stripe.webhooks.constructEvent(buf, sig, WEBHOOK_SECRET);
   } catch (err) {
-    console.error("Webhook signature verification failed:", err?.message || err);
-    return res.status(400).send(`Webhook Error: ${err?.message || "invalid signature"}`);
+    console.error("[webhook] Signature verification FAILED:", err?.message || err);
+    return res.status(400).json({ error: "Bad signature" });
   }
 
+  console.log("[webhook] event:", event.type);
+
+  // 3) Handle events you care about
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        const s = event.data.object;
+        const session = event.data.object;
 
-        // Basic details (Stripe amounts are in the smallest currency unit)
-        const amount = s.amount_total ?? 0;
-        const currency = (s.currency || "cad").toUpperCase();
-        const email = s.customer_details?.email || s.customer_email || "";
-        const meta = s.metadata || {};
-
-        // Forward to Sheets (optional)
-        await forwardToSheets({
+        // Minimal payload to log
+        const payload = {
           type: event.type,
-          session_id: s.id,
-          created_unix: s.created,
-          amount_total: amount,
-          currency,
-          customer_email: email,
-          businessName: meta.businessName || "",
-          contactName: meta.contactName || "",
-          phone: meta.phone || "",
-          // add anything else you want to log…
-        });
+          id: session.id,
+          amount_total: session.amount_total,
+          currency: session.currency,
+          customer_email: session.customer_details?.email || session.customer_email || "",
+          payment_intent: session.payment_intent || "",
+          timestamp: new Date().toISOString(),
+        };
 
-        // Email (optional)
-        await emailReceipt({
-          subject: `✅ Payment received — ${amount/100} ${currency}`,
-          text:
-`Payment received
-Session: ${s.id}
-Amount: ${(amount/100).toFixed(2)} ${currency}
-Email: ${email}
-Business: ${meta.businessName || "-"}
-Contact: ${meta.contactName || "-"}
-Phone: ${meta.phone || "-"}`
-        });
+        console.log("[webhook] checkout.session.completed:", payload);
+
+        // optional fire-and-forget log to Google Sheets
+        logToSheets({ source: "stripe-webhook", ...payload });
 
         break;
       }
 
-      // You can handle more events here if needed:
-      // case "payment_intent.succeeded": …
+      // add more cases as needed:
+      // case "payment_intent.succeeded": { … } break;
+
       default:
-        // No-op for other event types
-        break;
+        // Unhandled events are fine — Stripe just needs 2xx back
+        console.log("[webhook] unhandled:", event.type);
     }
 
+    // Respond 200 so Stripe stops retrying
     return res.status(200).json({ received: true });
   } catch (err) {
-    console.error("Webhook handler error:", err?.message || err);
-    return res.status(500).json({ error: "handler failure" });
+    // Never 5xx for business logic — ack 200 so Stripe doesn’t retry endlessly
+    console.error("[webhook] handler error (acknowledged):", err?.message || err);
+    return res.status(200).json({ received: true });
   }
 }
