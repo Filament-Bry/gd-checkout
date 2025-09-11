@@ -4,7 +4,6 @@ export const config = { runtime: "nodejs" };
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-// Lock CORS to your site (add www if you use it)
 const ALLOW_ORIGINS = new Set([
   "https://gabrioladirectory.ca",
   "https://www.gabrioladirectory.ca",
@@ -36,8 +35,8 @@ async function createSession({ amount_cents, currency = "cad", email, descriptio
       quantity: 1,
     }],
     metadata: { businessName, contactName, phone },
-    success_url: "https://gabrioladirectory.ca/?paid=1",
-    cancel_url: "https://gabrioladirectory.ca/?paid=0",
+    success_url: "https://gabrioladirectory.ca/?thanks=1&session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://gabrioladirectory.ca/?canceled=1",
   });
 
   return session.url;
@@ -45,20 +44,16 @@ async function createSession({ amount_cents, currency = "cad", email, descriptio
 
 export default async function handler(req, res) {
   setCors(res, req.headers.origin);
-
-  // Preflight
   if (req.method === "OPTIONS") return res.status(204).end();
 
   try {
     if (req.method === "GET") {
-      // Redirect flow: avoids CORS entirely for the browser
       const { amount_cents, currency, email, description, businessName, contactName, phone } = req.query || {};
       const url = await createSession({ amount_cents, currency, email, description, businessName, contactName, phone });
       return res.redirect(303, url);
     }
 
     if (req.method === "POST") {
-      // JSON flow: used by XHR/fetch (CORS headers already set)
       const { amount_cents, currency, email, description, businessName, contactName, phone } = req.body || {};
       const url = await createSession({ amount_cents, currency, email, description, businessName, contactName, phone });
       return res.status(200).json({ url });
